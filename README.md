@@ -334,3 +334,114 @@ python src/evaluate.py
 - **Não altere os datasets de avaliação** - apenas os prompts em `prompts/bug_to_user_story_v2.yml`
 - **Itere, itere, itere** - é normal precisar de 3-5 iterações para atingir 0.8 em todas as métricas
 - **Documente seu processo** - a jornada de otimização é tão importante quanto o resultado final
+
+---
+
+# Minha Entrega
+
+## A) Técnicas Aplicadas (Fase 2)
+
+O prompt `bug_to_user_story_v2.yml` aplica três técnicas de Prompt Engineering sobre o `bug_to_user_story_v1.yml` (que tinha problemas propositais: variável `{bug_report}` duplicada no system e no user prompt, nenhuma persona, nenhum exemplo, instruções vagas).
+
+### 1. Few-shot Learning (obrigatório)
+
+**Por quê:** era a técnica com maior impacto esperado. Sem exemplos, o modelo tinha que "adivinhar" o formato e o nível de detalhe corretos a cada chamada, o que gerava inconsistência — visível na métrica F1-Score do v1 (0.73), que mede o quanto a resposta cobre o que a referência esperava.
+
+**Como apliquei:** incluí 3 exemplos completos (entrada = relato de bug, saída = User Story no formato esperado) cobrindo os três níveis de complexidade do dataset — bug simples (botão que não funciona), bug médio (métrica errada no dashboard) e bug complexo (erro intermitente em API de pagamento, com contexto técnico e impacto). Os exemplos ensinam o modelo a variar o nível de detalhe conforme a complexidade do bug, não só o formato.
+
+### 2. Role Prompting
+
+**Por quê:** o v1 não definia nenhuma persona ("Você é um assistente que ajuda a transformar..."), o que deixava o tom genérico. Definir um papel específico ancora o vocabulário, o nível de profundidade e as prioridades do modelo.
+
+**Como apliquei:** abro o system prompt com "Você é um Product Manager sênior, especializado em transformar relatos de bugs [...] em User Stories claras e acionáveis [...] com profundo conhecimento de práticas de escrita de User Stories, critérios de aceitação testáveis e priorização por impacto no negócio." Isso empurra o modelo para linguagem de produto (valor de negócio, priorização) em vez de apenas descrição técnica do bug.
+
+### 3. Chain of Thought (CoT)
+
+**Por quê:** gerar uma User Story de qualidade exige várias decisões implícitas (quem é o usuário, qual o valor real, quantos critérios de aceitação fazem sentido para aquele nível de complexidade). Pedir para o modelo "pensar antes de responder" reduz respostas rasas ou incompletas.
+
+**Como apliquei:** o system prompt tem uma seção "Processo de raciocínio (siga internamente, passo a passo)" com 5 passos explícitos (identificar persona → identificar ação → identificar valor → montar critérios de aceitação → calibrar a complexidade). Instruo explicitamente para não expor esse raciocínio na resposta final, só o resultado formatado — assim o CoT melhora a qualidade sem poluir a saída com texto extra (o que penalizaria a métrica de Clarity/Concisão).
+
+Além dessas três, o prompt também: separa corretamente system prompt (instruções/persona/regras) de user prompt (só o `{bug_report}`, corrigindo o bug intencional do v1), define regras explícitas de comportamento (nunca inventar informação, sempre 3-7 critérios de aceitação, preservar contexto técnico quando presente) e trata edge cases (bug vago, múltiplos problemas no mesmo relato, bug sem usuário final direto).
+
+## B) Resultados Finais
+
+**Dashboard do LangSmith:**
+- Prompt público: https://smith.langchain.com/prompts/bug_to_user_story_v2/39b1a626?organizationId=8874aa0a-aa8d-4611-91c0-768dcd2c4e98
+- Projeto de tracing (`mba-ia`, execuções da avaliação): https://smith.langchain.com/o/8874aa0a-aa8d-4611-91c0-768dcd2c4e98/projects/p/9966c095-6ff8-442a-b2a3-76360c4ad8fa
+- Dataset de avaliação (`mba-ia-eval`, 15 exemplos): https://smith.langchain.com/o/8874aa0a-aa8d-4611-91c0-768dcd2c4e98/datasets/f919af7b-0397-461e-a64b-01a99265a8a2
+
+> Esses links exigem estar logado na mesma organização do LangSmith para abrir. Se precisar de acesso público sem login, use o botão "Share" do LangSmith em cada página (dataset/trace) para gerar um link compartilhável, ou anexe as screenshots abaixo como evidência.
+
+**Screenshots:**
+
+![Prompt v2 publicado](docs/screenshots/prompt-publico.png)
+![Dataset com 15 exemplos](docs/screenshots/dataset-15-exemplos.png)
+![Avaliação aprovada (todas as métricas >= 0.8)](docs/screenshots/avaliacao-aprovada.png)
+![Tracing detalhado de um exemplo](docs/screenshots/tracing.png)
+
+**Tabela comparativa — v1 (baixa qualidade) vs v2 (otimizado):**
+
+Medido com `python src/evaluate_v1_baseline.py` (v1) e `python src/evaluate.py` (v2), usando o mesmo dataset de 15 exemplos e o mesmo modelo (`gemini-2.5-flash`), para garantir uma comparação justa.
+
+| Métrica | v1 (baixa qualidade) | v2 (otimizado) |
+|---|---|---|
+| Helpfulness | 0.94 ✓ | 0.95 ✓ |
+| Correctness | 0.84 ✓ | 0.89 ✓ |
+| F1-Score | 0.73 ✗ | 0.84 ✓ |
+| Clarity | 0.94 ✓ | 0.96 ✓ |
+| Precision | 0.95 ✓ | 0.94 ✓ |
+| **Média geral** | **0.8797** | **0.9157** |
+| **Status** | ❌ REPROVADO | ✅ APROVADO |
+
+O ponto que mais chama atenção: o v1 já produzia texto razoavelmente claro e preciso (o `gemini-2.5-flash` é um modelo capaz mesmo com um prompt ruim), mas falhava especificamente em **F1-Score** — sem few-shot e sem estrutura, o modelo não cobria de forma consistente as informações que a referência esperava, o que reprovava o v1 mesmo com média geral acima de 0.8 (a regra exige todas as 5 métricas ≥ 0.8, não só a média). O v2 resolveu exatamente esse ponto e ainda melhorou as demais métricas.
+
+## C) Como Executar
+
+### Pré-requisitos
+
+- Python 3.11 ou 3.12 (evite 3.14: `pydantic-core` ainda não tem wheel pronta para essa versão em todas as plataformas, e você precisaria compilar com Rust/MSVC Build Tools instalados)
+- Conta no [LangSmith](https://smith.langchain.com) com uma API Key (Settings → API Keys)
+- Uma API key de LLM: [Google AI Studio](https://aistudio.google.com/app/apikey) (Gemini, usado nesta entrega) ou [OpenAI](https://platform.openai.com/api-keys)
+
+### Setup
+
+```bash
+git clone <seu-fork>
+cd mba-ia-pull-evaluation-prompt
+
+python -m venv venv
+source venv/bin/activate      # Linux/Mac
+# ou
+.\venv\Scripts\Activate.ps1   # Windows PowerShell
+
+pip install -r requirements.txt
+
+cp .env.example .env
+# edite o .env com LANGSMITH_API_KEY, USERNAME_LANGSMITH_HUB, GOOGLE_API_KEY
+# (o USERNAME_LANGSMITH_HUB é o seu handle do LangSmith Hub — veja a seção "Para descobrir seu username" no .env.example)
+```
+
+### Comandos, na ordem
+
+```bash
+# 1. Puxa o prompt de baixa qualidade do LangSmith Hub e salva em prompts/bug_to_user_story_v1.yml
+python src/pull_prompts.py
+
+# 2. Roda os testes de validação do prompt otimizado (prompts/bug_to_user_story_v2.yml)
+python -m pytest tests/test_prompts.py -v
+
+# 3. Publica o prompt otimizado no LangSmith Hub (público)
+python src/push_prompts.py
+
+# 4. Roda a avaliação completa (5 métricas, 15 exemplos) e publica o dataset/resultados no LangSmith
+python src/evaluate.py
+
+# Opcional: mede o v1 com as mesmas métricas, só para comparação (não publica no Hub)
+python src/evaluate_v1_baseline.py
+```
+
+Se `pytest` não for reconhecido como comando (comum no Windows quando o `Scripts`/`bin` do venv não está no PATH), rode como módulo: `python -m pytest tests/test_prompts.py -v`.
+
+### Critério de aprovação
+
+Todas as 5 métricas (Helpfulness, Correctness, F1-Score, Clarity, Precision) precisam ser ≥ 0.8 no `evaluate.py`. Se alguma ficar abaixo, edite `prompts/bug_to_user_story_v2.yml`, rode `push_prompts.py` de novo e reavalie — o `evaluate.py` sempre puxa a versão mais recente publicada no Hub.
